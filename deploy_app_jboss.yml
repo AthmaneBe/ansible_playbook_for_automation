@@ -1,0 +1,63 @@
+---
+- name: Déploiement des fichiers WAR et EAR depuis un répertoire vers JBoss
+  hosts: all
+  become: yes
+  vars:
+    jboss_home: /opt/jboss-as
+    deployment_dir: "{{ jboss_home }}/standalone/deployments"
+    source_dir: /home/athmane/my_ansible_project/WAR  # Répertoire contenant les fichiers WAR/ EAR
+  
+  tasks:
+
+    - name: Vérifier si le service JBoss est en cours d'exécution
+      systemd:
+        name: jboss
+        state: started
+      register: jboss_status
+
+    - name: Redémarrer JBoss si nécessaire
+      systemd:
+        name: jboss
+        state: restarted
+      when: jboss_status.changed
+
+    - name: Lister tous les fichiers WAR et EAR dans le répertoire source
+      find:
+        paths: "{{ source_dir }}"
+        patterns: "*.war|*.ear"
+        recurse: no
+      register: war_ear_files
+
+    - name: Déployer les fichiers trouvés dans le répertoire de déploiement JBoss
+      copy:
+        src: "{{ item.path }}"
+        dest: "{{ deployment_dir }}/{{ item.path | basename }}"
+        owner: jboss
+        group: jboss
+        mode: '0644'
+      with_items: "{{ war_ear_files.files }}"
+
+    - name: Vérifier si les fichiers ont été correctement copiés
+      stat:
+        path: "{{ deployment_dir }}/{{ item.path | basename }}"
+      register: app_status
+      with_items: "{{ war_ear_files.files }}"
+    
+    - name: Redémarrer JBoss après le déploiement
+      systemd:
+        name: jboss
+        state: restarted
+      when: app_status.results | selectattr('stat.exists', 'equalto', true) | list | length > 0
+
+    - name: Vérifier si les applications sont déployées correctement
+      shell: "curl http://localhost:8080/{{ item.path | basename | regex_replace('\\.(war|ear)$', '') }}"
+      register: curl_output
+      with_items: "{{ war_ear_files.files }}"
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Afficher le résultat des déploiements
+      debug:
+        msg: "{{ item.item.path | basename }}: {{ item.stdout if item.stdout else 'L\'application n\'a pas pu être vérifiée via curl.' }}"
+      with_items: "{{ curl_output.results }}"
+
